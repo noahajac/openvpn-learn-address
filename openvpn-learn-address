@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+
+server=[DNS SERVER]
+keyName=[DNS KEY NAME]
+key=[DNS KEY]
+forwardZone=[DNS ZONE]
+ttl=60
+
+operation=$1
+address=$2
+hostname=$3
+
+if [[ $address =~ .*:.* ]]; then
+  reverseRecord=`echo "$address" | awk -F: 'BEGIN {OFS=""; }{addCount = 9 - NF; for(i=1; i<=NF;i++){if(length($i) == 0){ for(j=1;j<=addCount;j++){$i = ($i "0000");} } else { $i = substr(("0000" $i), length($i)+5-4);}}; print}' | rev | sed -e "s/./&./g"`"ip6.arpa"
+  forwardRecordType=AAAA
+else
+  reverseRecord=`echo $address | sed -re 's:([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+):\4.\3.\2.\1.in-addr.arpa:'`
+  forwardRecordType=A
+fi
+
+if [ $operation == delete ]; then
+  forwardRecord=`dig +noall +answer +short -x $address | sed -e 's/\.$//'`
+else
+  forwardRecord=$hostname.$forwardZone
+fi
+
+addFile=/tmp/add_$address
+delFile=/tmp/del_$address
+
+logger "Received OpenVPN DDNS $operation command for $address"
+
+addRecord() {
+  echo "server $server" > $addFile
+  echo "key $keyName $key" >> $addFile
+  echo "update delete $forwardRecord $forwardRecordType" >> $addFile
+  echo "update add $forwardRecord $ttl $forwardRecordType $address" >> $addFile
+  echo "" >> $addFile
+  echo "update delete $reverseRecord PTR" >> $addFile
+  echo "update add $reverseRecord $ttl PTR $forwardRecord" >> $addFile
+  echo "send" >> $addFile
+  nsupdate -v $addFile
+  rm -f $addFile
+}
+
+deleteRecord() {
+  echo "server $server" > $delFile
+  echo "key $keyName $key" >> $delFile
+  if [[ $(dig +noall +answer +short $forwardRecordType $forwardRecord) = $address ]]; then
+    echo "update delete $forwardRecord $forwardRecordType" >> $delFile
+    echo "send" >> $delFile
+  fi
+  echo "update delete $reverseRecord PTR" >> $delFile
+  echo "send" >> $delFile
+  nsupdate -v $delFile
+  rm -f $delFile
+}
+
+case $operation in
+  add|update)
+    addRecord
+    ;;
+  delete)
+    deleteRecord
+    ;;
+  *)
+  exit
+esac
